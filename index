@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV 파일 병합기 (v2.7)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .drop-zone {
+            transition: background-color 0.2s ease;
+        }
+        .drop-zone.drag-over {
+            background-color: #e0f2fe;
+            border-color: #0284c7;
+        }
+        .spinner {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="bg-white w-full max-w-2xl rounded-xl shadow-lg p-8">
+        
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-slate-800">🗂️ CSV 파일 병합기</h1>
+            <p class="text-slate-600 mt-2">여러 국가의 Sales Report를 하나의 파일로 병합합니다. (v2.7)</p>
+        </div>
+
+        <!-- Drop Zone -->
+        <div id="dropZone" class="drop-zone border-4 border-dashed border-slate-300 rounded-lg p-12 text-center cursor-pointer bg-slate-50 hover:bg-slate-100">
+            <input type="file" id="fileInput" multiple class="hidden" accept=".csv">
+            <div class="flex flex-col items-center">
+                <!-- [v2.7] 아이콘 변경 -->
+                <svg class="w-16 h-16 text-slate-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
+                </svg>
+                <p class="mt-4 text-lg font-semibold text-slate-700">파일을 드래그 앤 드롭하세요</p>
+                <p class="text-slate-500">또는 클릭하여 파일 선택</p>
+            </div>
+        </div>
+
+        <!-- File List -->
+        <div id="fileListContainer" class="mt-6 hidden">
+            <h3 class="font-semibold text-slate-700">선택된 파일:</h3>
+            <ul id="fileList" class="mt-2 list-disc list-inside text-slate-600 space-y-1">
+                <!-- 파일 목록이 여기에 동적으로 추가됩니다 -->
+            </ul>
+        </div>
+
+        <!-- Action Button & Spinner -->
+        <div class="mt-8 text-center">
+            <button id="mergeButton" class="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center" disabled>
+                <span id="buttonText">파일 병합 및 다운로드</span>
+                <div id="spinner" class="spinner w-5 h-5 border-4 border-t-blue-500 border-white rounded-full ml-3 hidden"></div>
+            </button>
+        </div>
+
+        <!-- Status Message -->
+        <div id="statusMessage" class="mt-4 text-center"></div>
+
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const mergeButton = document.getElementById('mergeButton');
+        const fileListContainer = document.getElementById('fileListContainer');
+        const fileList = document.getElementById('fileList');
+        const statusMessage = document.getElementById('statusMessage');
+        const spinner = document.getElementById('spinner');
+        const buttonText = document.getElementById('buttonText');
+
+        let selectedFiles = [];
+
+        // [v2.6] 최종 출력될 고정 컬럼 순서 정의
+        const TARGET_COLUMNS = [
+            'Date', 'Country', 'ASIN', 'Parent ASIN', 'Product Title', 
+            'Brand', 'Model Number', 'Category', 'Subcategory', 
+            'MSRP', 'Revenue', 'Units'
+        ];
+
+        // 드롭존 이벤트
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            handleFiles(e.dataTransfer.files);
+        });
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        /**
+         * 파일 선택 핸들러
+         */
+        function handleFiles(files) {
+            selectedFiles = Array.from(files).filter(file => file.type === 'text/csv' || file.name.endsWith('.csv'));
+            
+            fileList.innerHTML = ''; // 목록 초기화
+            if (selectedFiles.length > 0) {
+                fileListContainer.classList.remove('hidden');
+                selectedFiles.forEach(file => {
+                    const li = document.createElement('li');
+                    li.textContent = file.name;
+                    fileList.appendChild(li);
+                });
+                mergeButton.disabled = false;
+            } else {
+                fileListContainer.classList.add('hidden');
+                mergeButton.disabled = true;
+                showStatus('CSV 파일만 선택해주세요.', 'error');
+            }
+        }
+
+        /**
+         * 상태 메시지 표시
+         */
+        function showStatus(message, type = 'info') {
+            statusMessage.textContent = message;
+            if (type === 'error') {
+                statusMessage.className = 'mt-4 text-center text-red-600 font-semibold';
+            } else if (type === 'success') {
+                statusMessage.className = 'mt-4 text-center text-green-600 font-semibold';
+            } else {
+                statusMessage.className = 'mt-4 text-center text-slate-600';
+            }
+        }
+
+        /**
+         * 병합 버튼 클릭 이벤트
+         */
+        mergeButton.addEventListener('click', async () => {
+            if (selectedFiles.length === 0) {
+                showStatus('병합할 파일이 없습니다.', 'error');
+                return;
+            }
+            
+            // UI를 로딩 상태로 변경
+            mergeButton.disabled = true;
+            spinner.classList.remove('hidden');
+            buttonText.textContent = '병합 중...';
+            showStatus('파일을 읽고 처리하는 중입니다...', 'info');
+
+            try {
+                const allRows = []; // 모든 파일의 데이터를 담을 배열
+                let processedCount = 0;
+
+                // [v2.6] 공통 헤더 (고정됨)
+                const finalHeader = TARGET_COLUMNS;
+
+                for (const file of selectedFiles) {
+                    try {
+                        // 1. 파일 메타데이터(날짜, 국가) 추출
+                        const { country, date } = extractMetadata(file.name);
+                        if (date === 'Unknown' || country === 'Unknown') {
+                            throw new Error(`파일 '${file.name}'에서 날짜 또는 국가 코드를 추출할 수 없습니다. 파일명을 확인하세요.`);
+                        }
+                        
+                        // 2. 파일 내용 읽기
+                        const content = await file.text();
+                        
+                        // 3. 파일 내용 처리 (헤더 매핑 및 데이터 추출)
+                        const fileRows = processFileContent(content, date, country);
+                        
+                        // 4. 전체 데이터에 추가
+                        allRows.push(...fileRows);
+
+                        processedCount++;
+                        showStatus(`파일 처리 중... (${processedCount}/${selectedFiles.length}) - ${file.name}`, 'info');
+
+                    } catch (fileError) {
+                        console.error(`[CONSOLE_ERROR] 파일 처리 중 오류 발생: ${fileError.stack}`);
+                        showStatus(`오류: ${fileError.message}`, 'error');
+                        // 하나의 파일이 실패해도 계속 진행하지 않고 중단
+                        throw fileError; 
+                    }
+                }
+
+                if (allRows.length === 0) {
+                    showStatus('병합할 데이터가 없습니다. (Units=0인 행만 있었을 수 있습니다)', 'error');
+                    resetUI();
+                    return;
+                }
+
+                // 5. 모든 데이터를 CSV 문자열로 변환
+                showStatus('최종 CSV 파일 생성 중...', 'info');
+
+                // [v2.6] 최종 헤더를 TARGET_COLUMNS 순서대로 생성
+                const headerString = finalHeader.map(h => `"${h.replace(/"/g, '""')}"`).join(',');
+                
+                const csvRows = allRows.map(row => {
+                    // [v2.6] TARGET_COLUMNS에 정의된 순서대로 값을 매핑
+                    const orderedRow = finalHeader.map(colName => {
+                        const value = row[colName] || ''; // 해당 컬럼 데이터가 없으면 빈 문자열
+                        return `"${String(value).replace(/"/g, '""')}"`; // 래핑
+                    });
+                    return orderedRow.join(',');
+                });
+
+                const finalCsvContent = [headerString, ...csvRows].join('\n');
+
+                // 6. CSV 파일 다운로드
+                downloadCsv(finalCsvContent, 'merged_sales_report.csv');
+                showStatus(`성공! 총 ${allRows.length}개의 행이 병합되었습니다.`, 'success');
+
+            } catch (error) {
+                console.error(`[CONSOLE_ERROR] 전체 병합 프로세스 오류: ${error.stack}`);
+                if (!statusMessage.textContent.startsWith('오류:')) {
+                    showStatus('알 수 없는 오류가 발생했습니다. 개발자 콘솔을 확인하세요.', 'error');
+                }
+            } finally {
+                // UI 초기화
+                resetUI();
+            }
+        });
+
+        /**
+         * UI 초기화
+         */
+        function resetUI() {
+            mergeButton.disabled = false;
+            spinner.classList.add('hidden');
+            buttonText.textContent = '파일 병합 및 다운로드';
+            fileInput.value = ''; // 파일 선택 초기화
+            selectedFiles = [];
+            fileListContainer.classList.add('hidden');
+            fileList.innerHTML = '';
+        }
+
+        /**
+         * 파일명에서 메타데이터 추출 (날짜, 국가)
+         */
+        function extractMetadata(filename) {
+            let country = 'Unknown';
+            let date = 'Unknown';
+
+            // 1. 국가 코드 추출
+            if (filename.includes('UnitedKingdom')) country = 'UK';
+            else if (filename.includes('Canada')) country = 'CA';
+            else if (filename.includes('Japan')) country = 'JP';
+
+            // 2. 날짜 추출 (YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY)
+            // YYYY-MM-DD (예: _2024-11-21_)
+            let match = filename.match(/_(\d{4}-\d{2}-\d{2})_/);
+            if (match && match[1]) {
+                date = match[1];
+            } else {
+                // MM-DD-YYYY (일본) 또는 DD-MM-YYYY (UK)
+                // (월/일이 1~2자리, 연도가 4자리)
+                match = filename.match(/_(\d{1,2}-\d{1,2}-\d{4})_/);
+                if (match && match[1]) {
+                    const parts = match[1].split('-'); // 예: ["10", "31", "2025"] 또는 ["31", "10", "2025"]
+                    
+                    if (country === 'UK') {
+                        // UK: DD-MM-YYYY
+                        const day = parts[0].padStart(2, '0');
+                        const month = parts[1].padStart(2, '0');
+                        const year = parts[2];
+                        date = `${year}-${month}-${day}`; // 2025-10-31
+                    } else {
+                        // JP (및 기타): MM-DD-YYYY
+                        const month = parts[0].padStart(2, '0');
+                        const day = parts[1].padStart(2, '0');
+                        const year = parts[2];
+                        date = `${year}-${month}-${day}`; // 2025-10-31
+                    }
+                }
+            }
+
+            return { country, date };
+        }
+
+        /**
+         * CSV 파일 내용 처리
+         */
+        function processFileContent(content, date, country) {
+            const lines = content.split('\n').filter(line => line.trim() !== ''); // 빈 줄 제거
+            if (lines.length < 2) {
+                // 헤더조차 없는 파일
+                return []; 
+            }
+
+            const headerLine = lines[1]; // 2번째 줄을 헤더로 사용
+            const header = parseCsvLine(headerLine);
+            const indices = normalizeHeader(header); // 중요 컬럼 인덱스 찾기
+
+            // [v2.6] 새 컬럼들 인덱스 확인
+            if (indices.asin === -1 || indices.productTitle === -1) {
+                console.warn(`파일 ${date}_${country}에서 ASIN 또는 Product Title 컬럼을 찾을 수 없습니다.`);
+                // 필수 컬럼이 없으면 이 파일을 건너뜁니다.
+                return []; 
+            }
+
+            const fileRows = [];
+            // 3번째 줄(인덱스 2)부터 데이터로 처리
+            for (let i = 2; i < lines.length; i++) {
+                const values = parseCsvLine(lines[i]);
+                if (values.length < header.length) {
+                    continue; // 헤더보다 짧은 불완전한 라인 스킵
+                }
+                
+                const asin = values[indices.asin] || '';
+                const productTitle = values[indices.productTitle] || '';
+
+                // Revenue/Units 로직 적용 (Ordered 우선)
+                let revenue = (values[indices.revenueOrdered] || values[indices.revenueShipped]) || '';
+                const units = (values[indices.unitsOrdered] || values[indices.unitsShipped]) || '';
+
+                // Revenue 통화기호/쉼표 제거
+                revenue = revenue.replace(/[^\d.-]/g, '');
+
+                // 'Units'가 0이거나 비어있으면 행 제거
+                if (units === '0' || units.trim() === '') {
+                    continue; 
+                }
+
+                // [v2.6] 신규 컬럼 데이터 추출 (없으면 빈 문자열)
+                const brand = values[indices.brand] || '';
+                const category = values[indices.category] || '';
+                const subcategory = values[indices.subcategory] || '';
+                const parentAsin = values[indices.parentAsin] || '';
+                const modelNumber = values[indices.modelNumber] || '';
+                
+                // [v2.7] MSRP 값 정제 (통화기호, 쉼표 등 제거)
+                let msrp = values[indices.msrp] || '';
+                msrp = msrp.replace(/[^\d.-]/g, '');
+
+                // [v2.6] 고정된 키를 가진 객체 생성 (TARGET_COLUMNS와 키 이름 일치)
+                fileRows.push({
+                    'Date': date,
+                    'Country': country,
+                    'ASIN': asin,
+                    'Product Title': productTitle,
+                    'Revenue': revenue,
+                    'Units': units,
+                    'Brand': brand,
+                    'Category': category,
+                    'Subcategory': subcategory,
+                    'Parent ASIN': parentAsin,
+                    'Model Number': modelNumber,
+                    'MSRP': msrp
+                });
+            }
+            return fileRows;
+        }
+
+        /**
+         * 헤더 배열을 받아 중요 컬럼의 인덱스를 매핑
+         */
+        function normalizeHeader(headerArray) {
+            const normalized = {};
+            const findIndex = (possibleNames) => {
+                for (const name of possibleNames) {
+                    const index = headerArray.findIndex(h => h.trim().toLowerCase() === name.toLowerCase());
+                    if (index !== -1) return index;
+                }
+                return -1;
+            };
+
+            normalized.asin = findIndex(['asin']);
+            normalized.productTitle = findIndex(['product title', 'producttitle']); // 'Product title' (UK), 'Product Title' (JP)
+            
+            normalized.revenueOrdered = findIndex(['ordered revenue', 'orderedrevenue']);
+            normalized.unitsOrdered = findIndex(['ordered units', 'orderedunits']);
+            
+            // UK 'Dispatched' / JP/CA 'Shipped'
+            normalized.revenueShipped = findIndex(['shipped revenue', 'shippedrevenue', 'dispatched revenue', 'dispatchedrevenue']);
+            normalized.unitsShipped = findIndex(['shipped units', 'shippedunits', 'dispatched units', 'dispatchedunits']);
+
+            // [v2.6] 신규 컬럼 인덱스 매핑
+            normalized.brand = findIndex(['brand']);
+            normalized.category = findIndex(['category']);
+            normalized.subcategory = findIndex(['subcategory']);
+            normalized.parentAsin = findIndex(['parent asin', 'parentasin']);
+            normalized.modelNumber = findIndex(['model number', 'modelnumber']);
+            normalized.msrp = findIndex(['msrp']);
+
+            return normalized;
+        }
+
+        /**
+         * CSV 한 줄을 파싱 (따옴표 안의 쉼표 처리)
+         */
+        function parseCsvLine(line) {
+            const values = [];
+            let current = '';
+            let inQuote = false;
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                
+                if (char === '"' && line[i+1] === '"') {
+                    // 이스케이프된 따옴표 ("") 처리
+                    current += '"';
+                    i++; // 다음 문자 건너뛰기
+                } else if (char === '"') {
+                    inQuote = !inQuote;
+                } else if (char === ',' && !inQuote) {
+                    values.push(current.trim());
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            values.push(current.trim()); // 마지막 값 추가
+            return values;
+        }
+
+        /**
+         * CSV 다운로드 함수
+         */
+        function downloadCsv(content, filename) {
+            // UTF-8 BOM을 추가하여 Excel에서 한글/특수문자가 깨지지 않도록 함
+            const bom = '\uFEFF';
+            const blob = new Blob([bom + content], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
+    </script>
+</body>
+</html>
